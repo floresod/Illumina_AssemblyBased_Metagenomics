@@ -1,0 +1,5 @@
+# Ignore the following directories/files 
+resources/Outputs/
+resources/Logs/
+results/*
+workflow/.snakemake

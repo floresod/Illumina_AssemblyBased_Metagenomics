@@ -1,0 +1,7 @@
+name: seqkit_env
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - seqkit=2.9.0=h9ee0642_0
+prefix: /project/6070698/floresod/miniforge3/envs/seqkit_env
