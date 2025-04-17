@@ -27,10 +27,9 @@ rule all:
         # Trimmed reads
         expand("../resources/Outputs/trimmed_reads/{sample}_{rf}.fastq.gz", sample=SAMPLES, rf=RF), 
         # FastQC for trimmed reads
-        expand("../results/fastqc_trimmed_reads/{sample}_{rf}.html", sample=SAMPLES, rf=RF),
-#        expand("../results/fastqc_trimmed_reads/{sample}_{rf}_fastqc.zip", sample=SAMPLES, rf=RF),
-        # Co-assembly outputs
-#       expand("../results/assembly/{sample}.fasta", sample=SAMPLE)
+        expand("../results/fastqc_clean_reads/{sample}_{rf}.html", sample=SAMPLES, rf=RF),
+        # Assembly outputs
+        expand("../results/assembly/{sample}/contigs.fasta", sample=SAMPLES)
 
 #################################
 #### Quality Check raw reads ####
@@ -79,23 +78,50 @@ rule trimmomatic_rr:
     threads: 
         4
     resources:
-        mem_mb=3024
+        mem_mb=8000
     wrapper:
         "v6.0.0/bio/trimmomatic/pe"
+
+
+
+############################################
+#### Decontamination (Host reads removal####
+############################################
+rule decontamination:
+    input: 
+        r1 = rules.trimmomatic_rr.output.r1,
+        r2 = rules.trimmomatic_rr.output.r2, 
+        index = "../resources/Databases/swine_genome/swine_genome.fna"
+    output:
+        r1_clean = "../resources/Outputs/clean_reads/{sample}_R1.fastq.gz", 
+        r2_clean = "../resources/Outputs/clean_reads/{sample}_R2.fastq.gz"
+    log:
+        "../resources/Logs/host_removal/{sample}.log"
+    threads:
+        40
+    conda:
+        "../envs/bwa_env.yaml"
+    shell:
+        """
+        bwa mem -t {threads} {input.index} \
+            {input.r1} {input.r2} | samtools view -bS - | \
+            samtools fastq -f 12 -F 256 -1 {output.r1_clean} -2 {output.r2_clean} - > /dev/null 2>> {log}
+        """
+
 
 #####################################
 #### Quality check trimmed reads ####
 #####################################
 rule fastqc_tr:
     input:
-        reads="../resources/Outputs/trimmed_reads/{sample}_{rf}.fastq.gz"
+        reads="../resources/Outputs/clean_reads/{sample}_{rf}.fastq.gz"
     output: 
-        html="../results/fastqc_trimmed_reads/{sample}_{rf}.html",
-        zip="../results/fastqc_trimmed_reads/{sample}_{rf}_fastqc.zip"
+        html="../results/fastqc_clean_reads/{sample}_{rf}.html",
+        zip="../results/fastqc_clean_reads/{sample}_{rf}_fastqc.zip"
     params:
         extra="--quiet"
     threads:
-        4
+        40
     resources:
         mem_mb=4000
     log:
@@ -110,19 +136,21 @@ rule fastqc_tr:
 #####################
 rule coassemble:
     input:
-        r1=lambda wildcards: ",".join([f"../resources/Outputs/trimmed_reads/{sample}_R1.fastq.gz" for sample in GROUPS[wildcards.group]]),
-        r2=lambda wildcards: ",".join([f"../resources/Outputs/trimmed_reads/{sample}_R2.fastq.gz" for sample in GROUPS[wildcards.group]])
+        reads=[rules.decontamination.output.r1_clean, rules.decontamination.output.r2_clean]
     output:
-        fasta="../results/coassembly/{group}.fasta"
+        contigs="../results/assembly/{sample}/contigs.fasta",
+        scaffolds="../results/assembly/{sample}/scaffolds.fasta",
+        dir=directory("../results/assembly/{sample}/intermediate_files")
     log:
-        "../resources/Logs/coassembly/{group}.log"
-    conda:
-        "../envs/spades_env.yaml"
-    shell:
-        """
-        mkdir -p $(dirname {output.fasta}) $(dirname {log})
-        spades.py --meta -o ../results/coassembly/{wildcards.group} \
-                  -1 {input.r1} -2 {input.r2} \
-                  > {log} 2>&1
-        """
+        "../resources/Logs/assembly/{sample}.log"
+    benchmark:
+        "../resources/Logs/benchmarks/assembly/{sample}.txt"
+    resources:
+        cores=4
+    threads:
+        40
+    resources:
+        mem_mb=15000
+    wrapper:
+        "v6.0.0/bio/spades/metaspades"
 
