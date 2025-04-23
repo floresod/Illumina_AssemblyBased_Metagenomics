@@ -31,7 +31,7 @@ rule all:
         # Assembly outputs
         expand("../results/assembly/{sample}/contigs.fasta", sample=SAMPLES),
         # Bins 
-        directory(expand("../resources/Outputs/binning/{sample}", sample=SAMPLES))
+        expand("../resources/Outputs/binning/{sample}/", sample=SAMPLES)
 
 #################################
 #### Quality Check raw reads ####
