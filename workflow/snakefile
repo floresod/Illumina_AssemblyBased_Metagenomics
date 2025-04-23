@@ -29,7 +29,9 @@ rule all:
         # FastQC for trimmed reads
         expand("../results/fastqc_clean_reads/{sample}_{rf}.html", sample=SAMPLES, rf=RF),
         # Assembly outputs
-        expand("../results/assembly/{sample}/contigs.fasta", sample=SAMPLES)
+        expand("../results/assembly/{sample}/contigs.fasta", sample=SAMPLES),
+        # Bins 
+        directory(expand("../resources/Outputs/binning/{sample}", sample=SAMPLES))
 
 #################################
 #### Quality Check raw reads ####
@@ -153,4 +155,121 @@ rule coassemble:
         mem_mb=15000
     wrapper:
         "v6.0.0/bio/spades/metaspades"
+
+
+
+#########################
+#### Filter Contigs #####
+#########################
+rule filter_contigs:
+    input:
+        contigs = "../results/assembly/{sample}/contigs.fasta"
+    output:
+        filtered_contigs = "../resources/Outputs/filtered_contigs/{sample}_contigs.fasta"
+    params:
+        min_length = 150
+    log:
+        "../resources/Logs/filter_contigs/{sample}.log"
+    threads:
+        52
+    conda:
+        "../envs/seqkit_env.yaml"
+    shell:
+        """
+        # Create directory
+        mkdir -p $(dirname {output.filtered_contigs}) ../resources/Logs/filter_contigs
+
+        seqkit seq --min-len {params.min_length} {input.contigs} > {output.filtered_contigs} 2> {log}
+        
+        echo "Filtered contigs >= {params.min_length} bp for sample {wildcards.sample}" >> {log}
+
+        """
+
+########################
+##### BWA alignment ####
+########################
+rule bwa_mem_alignment:
+    input:
+        contigs = "../resources/Outputs/filtered_contigs/{sample}_contigs.fasta",
+        reads_R1 = "../resources/Data/{sample}_R1.fastq.gz", 
+        reads_R2 = "../resources/Data/{sample}_R2.fastq.gz"
+    output:
+        sorted_bam = "../resources/Outputs/bwa/{sample}_sorted.bam"
+    log:
+        "../resources/Logs/bwa/{sample}.log"
+    threads:
+        120
+    conda:
+        "../envs/bwa_env.yaml"
+    shell:
+        """
+        # Create bwa output and log directories
+        mkdir -p $(dirname {output.sorted_bam}) $(dirname {log})
+
+        # Index the contigs
+        bwa index {input.contigs}
+
+        # Align reads and convert to sorted BAM
+        bwa mem -t {threads} {input.contigs} {input.reads_R1} {input.reads_R2} \
+            | samtools view -bS - \
+            | samtools sort -@ {threads} -o {output.sorted_bam}
+
+        # Index BAM
+        samtools index {output.sorted_bam}
+
+        echo "BWA-MEM alignment completed for sample {wildcards.sample}" >> {log}
+        """
+
+
+###############################
+##### Coverage Calculation ####
+###############################
+rule calculate_contigs_coverage:
+    input:
+        sorted_bam = "../resources/Outputs/bwa/{sample}_sorted.bam"
+    output:
+        coverage = "../resources/Outputs/coverage/{sample}_depth.txt"
+    log:
+        "../resources/Logs/coverage/{sample}.log"
+    threads:
+        120
+    conda:
+        "../envs/metabat2_env.yaml"
+    shell:
+        """
+        # Create directories if they don't exist
+        mkdir -p $(dirname {output.coverage}) $(dirname {log})
+
+        # Calculate coverage
+        jgi_summarize_bam_contig_depths --outputDepth {output.coverage} {input.sorted_bam} >> {log} 2>&1
+
+        echo "Coverage calculation completed for sample {wildcards.sample}" >> {log}
+        """
+
+###############################
+#### Binning with MetaBAT2 ####
+###############################
+rule metabat2_binning:
+    input:
+        contigs = "../resources/Outputs/filtered_contigs/{sample}_contigs.fasta",
+        coverage = "../resources/Outputs/coverage/{sample}_depth.txt"
+    output:
+        bins = directory("../resources/Outputs/binning/{sample}/")
+    log:
+        "../resources/Logs/binning/{sample}.log"
+    threads:
+        120  # Adjust based on your computational resources
+    conda:
+        "../envs/metabat2_env.yaml"
+    shell:
+        """
+        # Create directory for MetaBAT2 outputs
+        mkdir -p {output.bins}
+        
+        # Run MetaBAT2
+        metabat2 -i {input.contigs} -a {input.coverage} -m 2000 -t {threads} -v \
+            -o {output.bins}/bin >> {log} 2>&1
+        
+        echo "MetaBAT2 binning completed for sample {wildcards.sample}" >> {log}
+        """
 
